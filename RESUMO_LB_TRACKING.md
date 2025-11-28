@@ -282,13 +282,23 @@ npm run check:prod-health
 
 Este script:
 - Verifica o status do certificado `click-api-ssl-cert`
-- Testa o endpoint `/health` em `https://trk.iasouth.tech` (quando SSL estiver ACTIVE)
+- **Aborta com exit code 1 se SSL não estiver ACTIVE** (permite detecção automática em CI/cron)
+- Testa o endpoint `/health` em `https://trk.iasouth.tech` (apenas se SSL estiver ACTIVE)
 - Gera relatórios estruturados em JSON no diretório `reports/`
+- Garante que todos os arquivos JSON são válidos, mesmo em caso de erro
+- Usa arquivos temporários para garantir atomicidade (evita arquivos parcialmente escritos)
 
 **Relatórios gerados:**
 - `reports/ssl_status.json` - Status completo do certificado
-- `reports/health_response.json` - Resumo do health check
-- `reports/status_report.json` - Relatório consolidado
+- `reports/ssl_status.err` - Erros do `gcloud` (se houver)
+- `reports/health_response_raw.txt` - Resposta bruta do curl
+- `reports/health_response.json` - Resumo do health check (sempre JSON válido)
+- `reports/health_response.err` - Erros do `curl` (se houver)
+- `reports/status_report.json` - Relatório consolidado final
+
+**Exit codes:**
+- `0` → SSL ACTIVE e health check OK (HTTP 200)
+- `1` → Problema: SSL não ACTIVE, falha no gcloud, ou health check falhou
 
 Para mais detalhes, veja a seção "Check de Saúde em Produção" no `README.md`.
 

@@ -200,28 +200,52 @@ bash ./scripts/check_ssl_and_health.sh
 1. **Verifica o status do certificado SSL** (`click-api-ssl-cert`)
    - Obtém o status atual do certificado gerenciado via `gcloud`
    - Salva informações completas em `reports/ssl_status.json`
+   - Salva erros do `gcloud` em `reports/ssl_status.err` (se houver)
 
-2. **Testa o endpoint `/health`** (apenas se SSL estiver `ACTIVE`)
+2. **Valida se SSL está ACTIVE**
+   - Se SSL **não estiver ACTIVE**, o script **aborta com exit code 1**
+   - Isso permite que CI/cron detectem automaticamente problemas de provisionamento
+   - Mensagem de log informa o status atual (PROVISIONING, FAILED, etc.)
+
+3. **Testa o endpoint `/health`** (apenas se SSL estiver `ACTIVE`)
    - Executa `curl` no domínio `https://trk.iasouth.tech/health`
    - Mede código HTTP e tempo total da requisição
    - Salva resposta bruta em `reports/health_response_raw.txt`
-   - Salva resumo em JSON em `reports/health_response.json`
+   - Salva resumo em JSON em `reports/health_response.json` (**sempre JSON válido**)
+   - Salva erros do `curl` em `reports/health_response.err` (se houver)
 
-3. **Gera relatório consolidado**
+4. **Gera relatório consolidado**
    - Cria `reports/status_report.json` com:
      - `timestamp` (UTC, ISO 8601)
      - `ssl_status`
      - `health_status_code` (se testado)
      - `health_time_total` (se testado)
+   - Todos os arquivos JSON são gerados de forma atômica (usando arquivos temporários)
 
 ### Arquivos gerados
 
 Todos os relatórios são salvos no diretório `reports/`:
 
 - `ssl_status.json` - Status completo do certificado SSL
-- `health_response_raw.txt` - Resposta bruta do curl (se executado)
-- `health_response.json` - Resumo do health check em JSON (se executado)
+- `ssl_status.err` - Erros do `gcloud` (se houver falha)
+- `health_response_raw.txt` - Resposta bruta do curl
+- `health_response.json` - Resumo do health check em JSON (**sempre válido**, mesmo em erro)
+- `health_response.err` - Erros do `curl` (se houver falha)
 - `status_report.json` - Relatório consolidado final
+
+**Nota:** Todos os arquivos JSON são garantidos como válidos, mesmo em caso de erro. O script usa arquivos temporários (`.tmp`) para garantir atomicidade e evitar arquivos parcialmente escritos em execuções concorrentes.
+
+### Exit Codes
+
+O script retorna códigos de saída apropriados para automação:
+
+- **`0`** → Tudo OK: SSL está ACTIVE e health check retornou HTTP 200
+- **`1`** → Problema detectado:
+  - Falha ao obter status do certificado SSL
+  - SSL não está ACTIVE (PROVISIONING, FAILED, etc.)
+  - Health check falhou ou retornou status diferente de 200
+
+**Importante:** Se o SSL não estiver ACTIVE, o script retorna exit code 1 imediatamente, sem executar o health check. Isso permite que sistemas de CI/cron detectem automaticamente problemas de provisionamento.
 
 ### Configuração de Cron (Opcional)
 

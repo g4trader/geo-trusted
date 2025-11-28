@@ -78,16 +78,25 @@ fi
 
 # 1. Obter status do certificado SSL e salvar em JSON
 log_info "Obtendo status do certificado SSL..."
+SSL_STATUS_JSON="${REPORTS_DIR}/ssl_status.json"
+SSL_STATUS_TMP="${SSL_STATUS_JSON}.tmp"
+SSL_STATUS_ERR="${REPORTS_DIR}/ssl_status.err"
+
 if ! gcloud compute ssl-certificates describe "${CERT_NAME}" \
     --global \
-    --format="json" > "${REPORTS_DIR}/ssl_status.json" 2>/dev/null; then
-    log_error "Falha ao obter status do certificado SSL"
-    log_error "Verifique se o certificado existe e se você tem permissões"
+    --format="json" > "${SSL_STATUS_TMP}" \
+    2> "${SSL_STATUS_ERR}"; then
+    log_error "Falha ao obter status do certificado SSL (veja ${SSL_STATUS_ERR})"
+    # Limpar arquivo temporário se existir
+    rm -f "${SSL_STATUS_TMP}"
     exit 1
 fi
 
+# Mover arquivo temporário para o final (atomicidade)
+mv "${SSL_STATUS_TMP}" "${SSL_STATUS_JSON}"
+
 # 2. Ler status e armazenar em variável
-SSL_STATUS=$(jq -r '.managed.status // "UNKNOWN"' "${REPORTS_DIR}/ssl_status.json")
+SSL_STATUS=$(jq -r '.managed.status // "UNKNOWN"' "${SSL_STATUS_JSON}")
 
 if [ -z "${SSL_STATUS}" ] || [ "${SSL_STATUS}" = "null" ]; then
     log_error "Não foi possível extrair o status do certificado SSL"
@@ -97,86 +106,112 @@ fi
 log_info "Status SSL: ${SSL_STATUS}"
 echo ""
 
-# 3. Se status == "ACTIVE", executar testes do health endpoint
+# 3. Verificar se SSL está ACTIVE - se não estiver, abortar com exit 1
+if [ "${SSL_STATUS}" != "ACTIVE" ]; then
+    log_warn "SSL não está ACTIVE (status atual: ${SSL_STATUS}). Abortando health check."
+    log_warn "O script retornará exit code 1 para que CI/cron detecte o problema."
+    exit 1
+fi
+
+# 4. Executar testes do health endpoint (SSL está ACTIVE)
+log_info "SSL está ACTIVE. Testando endpoint /health..."
 HEALTH_STATUS_CODE=""
 HEALTH_TIME_TOTAL=""
 
-if [ "${SSL_STATUS}" = "ACTIVE" ]; then
-    log_info "SSL está ACTIVE. Testando endpoint /health..."
+HEALTH_RAW="${REPORTS_DIR}/health_response_raw.txt"
+HEALTH_RAW_TMP="${HEALTH_RAW}.tmp"
+HEALTH_ERR="${REPORTS_DIR}/health_response.err"
+HEALTH_JSON="${REPORTS_DIR}/health_response.json"
+HEALTH_JSON_TMP="${HEALTH_JSON}.tmp"
+
+if curl -sS -I "${HEALTH_ENDPOINT}" \
+    -o "${HEALTH_RAW_TMP}" \
+    -w '%{http_code} %{time_total}\n' \
+    --max-time 10 \
+    --connect-timeout 5 \
+    2> "${HEALTH_ERR}" | {
+      read code time || { code="ERROR"; time="ERROR"; }
+      jq -n --arg sc "$code" --arg tt "$time" '{status_code:$sc, time_total:$tt}'
+    } > "${HEALTH_JSON_TMP}"; then
     
-    # Executar curl e salvar saída bruta
-    if curl -I "${HEALTH_ENDPOINT}" \
-        -o "${REPORTS_DIR}/health_response_raw.txt" \
-        -s \
-        -w '{"status_code":"%{http_code}","time_total":"%{time_total}"}\n' \
-        --max-time 10 \
-        --connect-timeout 5 > "${REPORTS_DIR}/health_response.json" 2>&1; then
-        
-        # Extrair status_code e time_total do JSON gerado pelo curl
-        HEALTH_STATUS_CODE=$(jq -r '.status_code // "UNKNOWN"' "${REPORTS_DIR}/health_response.json")
-        HEALTH_TIME_TOTAL=$(jq -r '.time_total // "UNKNOWN"' "${REPORTS_DIR}/health_response.json")
-        
-        if [ "${HEALTH_STATUS_CODE}" = "200" ]; then
-            log_info "✅ Health check OK - Status: ${HEALTH_STATUS_CODE}, Tempo: ${HEALTH_TIME_TOTAL}s"
-        else
-            log_warn "⚠️  Health check retornou status: ${HEALTH_STATUS_CODE}"
-        fi
+    # Mover arquivos temporários para finais (atomicidade)
+    mv "${HEALTH_RAW_TMP}" "${HEALTH_RAW}"
+    mv "${HEALTH_JSON_TMP}" "${HEALTH_JSON}"
+    
+    # Extrair status_code e time_total do JSON
+    HEALTH_STATUS_CODE=$(jq -r '.status_code' "${HEALTH_JSON}")
+    HEALTH_TIME_TOTAL=$(jq -r '.time_total' "${HEALTH_JSON}")
+    
+    if [ "${HEALTH_STATUS_CODE}" = "200" ]; then
+        log_info "✅ Health check OK - Status: ${HEALTH_STATUS_CODE}, Tempo: ${HEALTH_TIME_TOTAL}s"
     else
-        log_error "Falha ao executar health check"
-        HEALTH_STATUS_CODE="ERROR"
-        HEALTH_TIME_TOTAL="ERROR"
+        log_warn "⚠️  Health check retornou status: ${HEALTH_STATUS_CODE}"
     fi
 else
-    log_warn "SSL não está ACTIVE (status: ${SSL_STATUS}). Pulando teste de health check."
-    log_warn "O endpoint /health só será testado quando o SSL estiver ACTIVE."
+    log_error "Health check falhou (detalhes em ${HEALTH_ERR})"
+    # Limpar arquivos temporários
+    rm -f "${HEALTH_RAW_TMP}" "${HEALTH_JSON_TMP}"
+    # Garantir JSON válido mesmo em erro
+    jq -n --arg sc "ERROR" --arg tt "ERROR" \
+        '{status_code:$sc, time_total:$tt}' > "${HEALTH_JSON_TMP}"
+    mv "${HEALTH_JSON_TMP}" "${HEALTH_JSON}"
+    HEALTH_STATUS_CODE="ERROR"
+    HEALTH_TIME_TOTAL="ERROR"
 fi
 
 echo ""
 
-# 4. Gerar log consolidado em JSON
+# 5. Gerar log consolidado em JSON
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 log_info "Gerando relatório consolidado..."
+
+STATUS_JSON="${REPORTS_DIR}/status_report.json"
+STATUS_TMP="${STATUS_JSON}.tmp"
 
 # Criar JSON consolidado usando jq para garantir formato válido
 jq -n \
     --arg timestamp "${TIMESTAMP}" \
     --arg ssl_status "${SSL_STATUS}" \
-    --arg health_status_code "${HEALTH_STATUS_CODE:-"N/A"}" \
-    --arg health_time_total "${HEALTH_TIME_TOTAL:-"N/A"}" \
+    --arg health_status_code "${HEALTH_STATUS_CODE:-N/A}" \
+    --arg health_time_total "${HEALTH_TIME_TOTAL:-N/A}" \
     '{
         timestamp: $timestamp,
         ssl_status: $ssl_status,
         health_status_code: $health_status_code,
         health_time_total: $health_time_total
-    }' > "${REPORTS_DIR}/status_report.json"
+    }' > "${STATUS_TMP}"
 
-# 5. Exibir resultado final formatado
+# Mover arquivo temporário para o final (atomicidade)
+mv "${STATUS_TMP}" "${STATUS_JSON}"
+
+# 6. Exibir resultado final formatado
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log_info "📊 Relatório Consolidado"
 log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-cat "${REPORTS_DIR}/status_report.json" | jq .
+cat "${STATUS_JSON}" | jq .
 echo ""
 
 log_info "Relatórios salvos em: ${REPORTS_DIR}/"
 log_info "  - ssl_status.json: Status completo do certificado SSL"
-log_info "  - health_response_raw.txt: Resposta bruta do curl (se executado)"
-log_info "  - health_response.json: Resumo do health check em JSON (se executado)"
+log_info "  - ssl_status.err: Erros do gcloud (se houver)"
+log_info "  - health_response_raw.txt: Resposta bruta do curl"
+log_info "  - health_response.json: Resumo do health check em JSON (sempre válido)"
+log_info "  - health_response.err: Erros do curl (se houver)"
 log_info "  - status_report.json: Relatório consolidado final"
 echo ""
 
-# Exit code baseado no resultado
-if [ "${SSL_STATUS}" = "ACTIVE" ]; then
-    if [ "${HEALTH_STATUS_CODE}" = "200" ]; then
-        log_info "✅ Validação concluída com sucesso"
-        exit 0
-    else
-        log_warn "⚠️  SSL está ACTIVE, mas health check falhou"
-        exit 1
-    fi
-else
-    log_warn "⚠️  SSL não está ACTIVE. Execute novamente quando o certificado estiver provisionado."
+# 7. Exit code baseado no resultado
+# Exit codes:
+#   0 → Tudo OK: SSL ACTIVE + health check concluído com sucesso
+#   1 → Problema: Falha no gcloud, SSL não ACTIVE, ou health check falhou
+
+if [ "${HEALTH_STATUS_CODE}" = "200" ]; then
+    log_info "✅ Validação concluída com sucesso"
     exit 0
+else
+    log_warn "⚠️  Health check falhou ou retornou status diferente de 200"
+    exit 1
 fi
 
