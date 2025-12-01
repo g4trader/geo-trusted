@@ -90,10 +90,22 @@ echo ""
 echo -e "${YELLOW}5️⃣ Fazendo deploy no Cloud Run...${NC}"
 
 # Ler secrets do usuário (não hardcoded)
-read -sp "Digite SIG_SECRET (não será exibido): " SIG_SECRET
-echo ""
-read -sp "Digite LOG_SALT (não será exibido): " LOG_SALT
-echo ""
+# Permite usar variáveis de ambiente ou input interativo
+if [ -z "$SIG_SECRET" ]; then
+  read -sp "Digite SIG_SECRET (não será exibido): " SIG_SECRET
+  echo ""
+fi
+
+if [ -z "$LOG_SALT" ]; then
+  read -sp "Digite LOG_SALT (não será exibido): " LOG_SALT
+  echo ""
+fi
+
+if [ -z "$SIG_SECRET" ] || [ -z "$LOG_SALT" ]; then
+  echo -e "${RED}❌ SIG_SECRET e LOG_SALT são obrigatórios${NC}"
+  echo "Configure via variáveis de ambiente: export SIG_SECRET=... LOG_SALT=..."
+  exit 1
+fi
 
 gcloud run deploy $SERVICE_NAME \
   --image=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_NAME/$IMAGE_NAME:$IMAGE_TAG \
