@@ -204,6 +204,43 @@ describe('Integration Tests - GeoIP Provider Behavior', () => {
       expect(Array.isArray(parsedLog.reasonCodes)).toBe(true);
       expect(parsedLog.reasonCodes).toContain('OUT_OF_GEO');
     });
+
+    it('should NOT expose redirect URL in HTML when country is not BR', async () => {
+      // Mock provider retorna US (não-BR)
+      mockProvider.getCountryCode.mockResolvedValue('US');
+      geoService.setProvider(mockProvider);
+
+      const redirectUrl = 'https://example.com/landing';
+      const response = await request(app)
+        .get('/click')
+        .query({
+          ad_id: '123',
+          creative_id: '456',
+          redirect: redirectUrl,
+        })
+        .set('X-Forwarded-For', '8.8.8.8');
+
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      
+      // Verificar que HTML NÃO contém a URL de redirect
+      expect(response.text).not.toContain(redirectUrl);
+      expect(response.text).not.toContain('example.com');
+      
+      // Verificar que HTML NÃO contém parâmetros de query
+      expect(response.text).not.toContain('ad_id=123');
+      expect(response.text).not.toContain('creative_id=456');
+      
+      // Verificar que NÃO há botão "Continuar"
+      expect(response.text).not.toContain('Continuar');
+      
+      // Verificar que há mensagem de aviso
+      expect(response.text).toContain('Aviso');
+      expect(response.text).toContain('Brasil');
+      
+      // Verificar que há botão "Fechar" (opcional)
+      expect(response.text).toContain('Fechar');
+    });
   });
 
   describe('Provider Mock - Non-BR Country Code', () => {

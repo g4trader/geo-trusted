@@ -147,9 +147,11 @@ router.get('/', async (req, res) => {
       // Responder 302 Location
       return res.redirect(302, redirectUrl);
     } else {
-      // Não é BR ou decision !== 'allow' - mostrar página de aviso
+      // Não é BR ou decision !== 'allow' - mostrar página de aviso informativo
+      // IMPORTANTE: NÃO incluir qualquer referência ao redirect no HTML
+      // A página é apenas informativa, sem possibilidade de seguir para o anunciante
 
-      // Renderizar página HTML simples com aviso + botão "Continuar"
+      // Renderizar página HTML simples com aviso informativo (sem redirect)
       const html = `
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -206,8 +208,8 @@ router.get('/', async (req, res) => {
   <div class="container">
     <h1>⚠️ Aviso</h1>
     <p>Este conteúdo está disponível apenas para usuários no Brasil.</p>
-    <p>Se você deseja continuar mesmo assim, clique no botão abaixo.</p>
-    <a href="${redirect}?ad_id=${ad_id}&creative_id=${creative_id}${cid ? `&cid=${cid}` : ''}${dsp ? `&dsp=${dsp}` : ''}" class="button">Continuar</a>
+    <p>Por questões de segurança e restrições geográficas, não é possível acessar este conteúdo a partir da sua localização atual.</p>
+    <button onclick="window.close()" class="button">Fechar</button>
   </div>
 </body>
 </html>
